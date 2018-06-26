@@ -53,7 +53,7 @@ static bool bqGenerateNoise(uint8_t *buf, uint32_t size) {
     ssize_t result = read(rng, buf, size);
     if (result != SIZE_BUFFER) {
         __android_log_print(ANDROID_LOG_ERROR, TAG,
-                            "Unsatisfied generation of pseudo-random values! Read %d to buffer, size %d",
+                            "Unsatisfied generation of pseudo-random values! Read %zu to buffer, size %d",
                             result, size);
         return false;
     }
