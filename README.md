@@ -2,7 +2,7 @@
 
 Minimal Android application generating white noise.
 
-The application is using hardware-accelerated audio using open-source library [OpenSL ES](https://www.khronos.org/opensles).
+The application is using hardware-accelerated audio using open-source library [OpenSL ES](https://www.khronos.org/opensles), as recommended by Google.
 
 See the shared library [libnoizer](app/src/main/cpp/libnoizer.cpp) for the noise generator implementation.
 
@@ -23,6 +23,8 @@ app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ## Install
-Unsigned application may be installed if third party markets are trusted or by ```adb install [.apk]```.
+Debug build types can be installed by ```adb install [.apk]```.
 
-If application is to be distributed, signing is necessary.
+Release build types must be signed to be installed. 
+
+See Androids [signing procedure](https://developer.android.com/studio/publish/app-signing#signing-manually) using apksigner.
