@@ -13,7 +13,7 @@
 #include <SLES/OpenSLES_Android.h>
 
 #define TAG "Noizer"
-#define SIZE_BUFFER 512 * 1024
+#define SIZE_BUFFER 1024 * 1024 // 1 MB
 
 // engine interfaces
 static SLObjectItf engineObject = NULL;
@@ -21,14 +21,12 @@ static SLEngineItf engineEngine;
 
 // output mix interfaces
 static SLObjectItf outputMixObject = NULL;
-static SLEnvironmentalReverbItf outputMixEnvironmentalReverb = NULL;
 
 // buffer queue player interfaces
 static SLObjectItf bqPlayerObject = NULL;
 static SLPlayItf bqPlayerPlay;
 static SLAndroidSimpleBufferQueueItf bqPlayerBufferQueue;
 static SLEffectSendItf bqPlayerEffectSend;
-static SLMuteSoloItf bqPlayerMuteSolo;
 static SLVolumeItf bqPlayerVolume;
 
 enum stateMachine {
@@ -40,19 +38,15 @@ enum stateMachine {
 static stateMachine mState = UNINITIALIZED;
 static pthread_mutex_t mStateLock = PTHREAD_MUTEX_INITIALIZER;
 
-// aux effect on the output mix, used by the buffer queue player
-static const SLEnvironmentalReverbSettings reverbSettings =
-        SL_I3DL2_ENVIRONMENT_PRESET_STONECORRIDOR;
-
 static uint8_t noiseBuffer[SIZE_BUFFER];
 
-static bool fnGenerateNoise(uint8_t *buf, uint32_t size) {
+static bool bqGenerateNoise(uint8_t *buf, uint32_t size) {
 
-    __android_log_print(ANDROID_LOG_DEBUG, TAG, "Updating noise buffer ...");
+    __android_log_print(ANDROID_LOG_DEBUG, TAG, "Updating noise buffer");
 
     int rng = open("/dev/urandom", O_RDONLY);
     if (rng < 0) {
-        __android_log_print(ANDROID_LOG_ERROR, TAG, "Could not open /dev/urandom.");
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "Could not open /dev/urandom");
         return false;
     }
 
@@ -69,7 +63,7 @@ static bool fnGenerateNoise(uint8_t *buf, uint32_t size) {
 
 // Fill buffer with noise from /dev/urandom on load
 __attribute__((constructor)) static void onLoad(void) {
-    fnGenerateNoise(noiseBuffer, SIZE_BUFFER);
+    bqGenerateNoise(noiseBuffer, SIZE_BUFFER);
 }
 
 // this callback handler is called every time a buffer finishes playing
@@ -77,9 +71,7 @@ void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context) {
     assert(bq == bqPlayerBufferQueue);
     assert(NULL == context);
 
-    __android_log_print(ANDROID_LOG_DEBUG, TAG, "Callback!");
-
-    fnGenerateNoise(noiseBuffer, SIZE_BUFFER);
+    bqGenerateNoise(noiseBuffer, SIZE_BUFFER);
 
     // for streaming playback, replace this test by logic to find and fill the next buffer
     SLresult result;
@@ -87,7 +79,7 @@ void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context) {
     assert(SL_RESULT_SUCCESS == result);
 }
 
-void fnCreateBufferQueueAudioPlayer() {
+void bqCreateBufferQueueAudioPlayer() {
     SLresult result;
 
     // configure audio source
@@ -145,13 +137,6 @@ void fnCreateBufferQueueAudioPlayer() {
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
 
-#if 0   // mute/solo is not supported for sources that are known to be mono, as this is
-    // get the mute/solo interface
-    result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_MUTESOLO, &bqPlayerMuteSolo);
-    assert(SL_RESULT_SUCCESS == result);
-    (void)result;
-#endif
-
     // get the volume interface
     result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_VOLUME, &bqPlayerVolume);
     assert(SL_RESULT_SUCCESS == result);
@@ -166,15 +151,13 @@ void fnCreateBufferQueueAudioPlayer() {
 static jboolean stop() {
     assert(mState == IS_PLAYING);
 
-    __android_log_print(ANDROID_LOG_INFO, TAG, "Stopping noise generator ...");
-
     if (!pthread_mutex_lock(&mStateLock)) {
         (*bqPlayerObject)->Destroy(bqPlayerObject);
         mState = IS_STOPPED;
         pthread_mutex_unlock(&mStateLock);
         return JNI_TRUE;
     } else {
-        __android_log_print(ANDROID_LOG_ERROR, TAG, "Failed to lock.");
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "Failed to lock");
         return JNI_FALSE;
     }
 }
@@ -183,12 +166,10 @@ static jboolean stop() {
 static jboolean play() {
     assert(mState == IS_STOPPED);
 
-    __android_log_print(ANDROID_LOG_INFO, TAG, "Generating noise ...");
-
     if (!pthread_mutex_lock(&mStateLock)) {
-        fnCreateBufferQueueAudioPlayer();
+        bqCreateBufferQueueAudioPlayer();
 
-        fnGenerateNoise(noiseBuffer, SIZE_BUFFER);
+        bqGenerateNoise(noiseBuffer, SIZE_BUFFER);
 
         SLresult result;
         result = (*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue, noiseBuffer, SIZE_BUFFER);
@@ -199,7 +180,7 @@ static jboolean play() {
 
         return JNI_TRUE;
     } else {
-        __android_log_print(ANDROID_LOG_ERROR, TAG, "Failed to lock.");
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "Failed to lock");
         return JNI_FALSE;
     }
 }
@@ -208,9 +189,12 @@ static jboolean play() {
 extern "C" JNICALL
 void Java_com_application_noizer_NoizerService_initialize(JNIEnv *env, jclass clazz) {
 
-    __android_log_print(ANDROID_LOG_DEBUG, TAG, "Initializing noise generator.");
+    if (mState != UNINITIALIZED)
+        return;
 
     SLresult result;
+
+    // create the engine
     result = slCreateEngine(&engineObject, 0, NULL, 0, NULL, NULL);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
@@ -225,8 +209,8 @@ void Java_com_application_noizer_NoizerService_initialize(JNIEnv *env, jclass cl
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
 
-    // create output mix, with environmental reverb specified as a non-required interface
-    const SLInterfaceID ids[1] = {SL_IID_ENVIRONMENTALREVERB};
+    // create output mix
+    const SLInterfaceID ids[1] = {SL_IID_NULL};
     const SLboolean req[1] = {SL_BOOLEAN_FALSE};
     result = (*engineEngine)->CreateOutputMix(engineEngine, &outputMixObject, 1, ids, req);
     assert(SL_RESULT_SUCCESS == result);
@@ -237,23 +221,7 @@ void Java_com_application_noizer_NoizerService_initialize(JNIEnv *env, jclass cl
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
 
-    // get the environmental reverb interface
-    // this could fail if the environmental reverb effect is not available,
-    // either because the feature is not present, excessive CPU load, or
-    // the required MODIFY_AUDIO_SETTINGS permission was not requested and granted
-    result = (*outputMixObject)->GetInterface(outputMixObject, SL_IID_ENVIRONMENTALREVERB,
-                                              &outputMixEnvironmentalReverb);
-    if (SL_RESULT_SUCCESS == result) {
-        result = (*outputMixEnvironmentalReverb)->SetEnvironmentalReverbProperties(
-                outputMixEnvironmentalReverb, &reverbSettings);
-        (void) result;
-    }
-
-    // ignore unsuccessful result codes for environmental reverb, as it is optional for this example
-
     mState = IS_STOPPED;
-
-    __android_log_print(ANDROID_LOG_DEBUG, TAG, "Noise generator initialized: %d", mState);
 }
 
 extern "C" JNICALL
